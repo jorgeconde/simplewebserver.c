@@ -77,7 +77,7 @@ int main(int argc, char* argv[]){
     printf("sws: waiting to recvfrom...\n");
     cli_len = sizeof(cli_addr);
     
-    if ((numbytes = recvfrom(sockfd, buffer, MAXBUFLEN-1 , 0,
+    if ((numbytes = recvfrom(socketfd, buffer, MAXBUFLEN-1 , 0,
                              (struct sockaddr *)&cli_addr, &cli_len)) == -1) {
         perror("sws: error on recvfrom()!");
         return -1;
