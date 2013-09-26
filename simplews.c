@@ -86,6 +86,10 @@ int main(int argc, char* argv[]){
     printf("sws is running on UDP port %d and serving %s\n",server_portno,root_directory);
     printf("press 'q' to quit ...\n");
     
+    printf("sws: received packet from IP: %s and Port: %d\n", inet_ntoa(cli_addr.sin_addr), ntohs(cli_addr.sin_port));
+    printf("listener: received packet is %d bytes long\n", numbytes);
+    buffer[numbytes] = '\0';
+    printf("listener: packet contains \"%s\" \n", buffer);
     
     if ((numbytes = sendto(socketfd, buffer, strlen(buffer), 0,
             (struct sockaddr *) &cli_addr, cli_len)) == -1) {
