@@ -15,8 +15,10 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <fcntl.h>
  
 #define MAXBUFLEN 256
+#define BYTES 1024
 
 int socketfd, server_portno;
 char *root_directory;
@@ -25,6 +27,7 @@ socklen_t cli_len;
 char buffer[MAXBUFLEN]; // data buffer
 
 
+void setReusable(int socket);
 int ready(int socketfd);
 int startServer();
 int readCommandLine(int c, char* a[]);
@@ -62,13 +65,6 @@ int main(int argc, char* argv[]){
 
     	respond(numbytes);
 	
-
-
-        /*if ((numbytes = sendto(socketfd, buffer, strlen(buffer), 0,
-                (struct sockaddr *) &cli_addr, cli_len)) == -1) {
-            perror("sws: error in sendto()");
-            return -1;
-        }*/
     }
     
     close(socketfd);
@@ -76,25 +72,108 @@ int main(int argc, char* argv[]){
     return 0;
 }
 
+void setReusable(int socket) {
+	int opt = 1;
+
+	if (setsockopt(socket, SOL_SOCKET, SO_REUSEADDR, (char *)&opt, sizeof(opt)) < 0) {
+		printf("Socket error: Unable to set server socket %d reusable \n", socket);
+	}
+
+	return;
+}
+
 void respond(int numbytes){
 
     char *request[3];
+    int i=0, count=1;
+    int fd, bytes_read;
+    char path[999], data_to_send[BYTES];
+    int length = strlen(buffer);
 
     printf("sws: received packet from IP: %s and Port: %d\n", inet_ntoa(cli_addr.sin_addr), ntohs(cli_addr.sin_port));
     printf("listener: received packet is %d bytes long\n", numbytes);
     buffer[numbytes] = '\0';
     printf("listener: packet contains \"%s\" \n", buffer);
 
+
+    if(strcmp(buffer,"\n") == 0) return;
+
+
     request[0] = strtok(buffer," \t\n");
-    if(strncmp(request[0], "GET\0", 4)==0){
-        printf("YEI\n\n\n");
-    }
+
+    if (strncmp(request[0], "GET\0", 4)==0) {
+	
+	
+	request[1] = strtok (NULL, " \t");
+	if( request[1] != NULL) count++;
+        request[2] = strtok (NULL, " \t\n");
+	if( request[2] != NULL) count++;
+
+	if( count < 3 ){
+		if ((numbytes = sendto(socketfd, "HTTP/1.0 400 Bad Request\n", 25, 0,
+                	(struct sockaddr *) &cli_addr, cli_len)) == -1) {
+            		perror("sws: error in sendto()");
+            		return;
+        	}
+	}else if(strncmp( request[2], "HTTP/1.0", 8)!=0 ){
+	    	if ((numbytes = sendto(socketfd, "HTTP/1.0 400 Bad Request\n", 25, 0,
+                	(struct sockaddr *) &cli_addr, cli_len)) == -1) {
+            		perror("sws: error in sendto()");
+            		return;
+        	}
+	}else{
+
+	    if(strncmp(request[1], "/\0", 2)==0 )
+                    request[1] = "/index.html";
+
+            printf("request[1] is: %s\n", request[1]);
+
+	    strcpy(path, root_directory);
+	    strcpy(&path[strlen(root_directory)], request[1]);
+
+	    printf("file is %s\n", path);
+
+	    /* Check if the file object is found */
+	    if ( (fd=open(path, O_RDONLY))!=-1 ){
+
+		if ((numbytes = sendto(socketfd, "HTTP/1.0 200 OK\n", 17, 0,
+                	(struct sockaddr *) &cli_addr, cli_len)) == -1) {
+            		perror("sws: error in sendto()");
+            		return;
+        	}
+
+                while ( (bytes_read=read(fd, data_to_send, BYTES))>0 ){
+		    if ((numbytes = sendto(socketfd, data_to_send, BYTES, 0,
+                	(struct sockaddr *) &cli_addr, cli_len)) == -1) {
+            		perror("sws: error in sendto()");
+            		return;
+        	    }
+		}
+
+            }else{
+		if ((numbytes = sendto(socketfd, "HTTP/1.0 404 Not Found\n", 23, 0,
+                	(struct sockaddr *) &cli_addr, cli_len)) == -1) {
+            		perror("sws: error in sendto()");
+            		return;
+        	}
+	    }
+	}
+    }  
 
 	
 
 }
 
 int startServer(){
+
+    /* Create a socket type UDP */
+    if ((socketfd = socket(AF_INET, SOCK_DGRAM, 0)) == -1){
+        perror("sws: error on socket()");
+        return -1;
+    }
+
+    setReusable(socketfd);
+
 
     /* Clear the used structure */
     bzero((char *) &serv_addr, sizeof(serv_addr));
@@ -105,11 +184,7 @@ int startServer(){
     serv_addr.sin_port = htons(server_portno);
 
 
-    /* Create a socket type UDP */
-    if ((socketfd = socket(AF_INET, SOCK_DGRAM, 0)) == -1){
-        perror("sws: error on socket()");
-        return -1;
-    }
+
     
     /* Bind the socket with the address information */
     if (bind(socketfd, (struct sockaddr *) &serv_addr, sizeof(serv_addr)) < 0) {
