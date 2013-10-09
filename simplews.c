@@ -16,10 +16,12 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <fcntl.h>
+#include <time.h>
  
 #define MAXBUFLEN 256
 #define BYTES 1024
 
+char *response_line, *filename;
 int socketfd, server_portno;
 char *root_directory;
 struct sockaddr_in serv_addr, cli_addr;
@@ -29,6 +31,7 @@ char buffer[MAXBUFLEN]; // data buffer
 
 void setReusable(int socket);
 int ready(int socketfd);
+void uppercase(char *s);
 int startServer();
 int readCommandLine(int c, char* a[]);
 void respond(int numbytes);
@@ -62,8 +65,8 @@ int main(int argc, char* argv[]){
             return -1;
         }
     
-
     	respond(numbytes);
+	printf(" %s; %s\n", response_line, filename);
 	
     }
     
@@ -82,18 +85,32 @@ void setReusable(int socket) {
 	return;
 }
 
-void respond(int numbytes){
+void uppercase(char *s){
 
+    while ( *s != '\0' ) {
+        *s = toupper ( ( unsigned char ) *s );
+        ++s;
+    }
+}
+
+void respond(int numbytes){
+    time_t mytime;
     char *request[3];
     int i=0, count=1;
     int fd, bytes_read;
     char path[999], data_to_send[BYTES];
     int length = strlen(buffer);
 
-    printf("sws: received packet from IP: %s and Port: %d\n", inet_ntoa(cli_addr.sin_addr), ntohs(cli_addr.sin_port));
-    printf("listener: received packet is %d bytes long\n", numbytes);
+    /* Client-IP:Client-Port request-line; response-line; [filename] */\
+
     buffer[numbytes] = '\0';
-    printf("listener: packet contains \"%s\" \n", buffer);
+    buffer[numbytes-1] = ' ';
+
+    mytime = time(NULL);
+    char *t = ctime(&mytime);
+    t[strlen(t)-6] = '\0';
+
+    printf("%s %s:%d %s;", t ,inet_ntoa(cli_addr.sin_addr), ntohs(cli_addr.sin_port), buffer);
 
 
     if(strcmp(buffer,"\n") == 0) return;
@@ -101,22 +118,27 @@ void respond(int numbytes){
 
     request[0] = strtok(buffer," \t\n");
 
+    uppercase(request[0]);
+
     if (strncmp(request[0], "GET\0", 4)==0) {
 	
-	
-	request[1] = strtok (NULL, " \t");
-	if( request[1] != NULL) count++;
-        request[2] = strtok (NULL, " \t\n");
-	if( request[2] != NULL) count++;
+	char *ptr = strtok (NULL, " \t");
+	if( ptr != NULL){ count++; request[1] = ptr; }
+       
+	char *ptr2 = strtok (NULL, " \t\n");
+	if( ptr2 != NULL ){ count++; request[2] = ptr2; uppercase(request[2]);}
 
 	if( count < 3 ){
-		if ((numbytes = sendto(socketfd, "HTTP/1.0 400 Bad Request\n", 25, 0,
+		response_line = "HTTP/1.0 400 Bad Request";
+		if ((numbytes = sendto(socketfd, "HTTP/1.0 400 Bad Request\n\n", 25, 0,
                 	(struct sockaddr *) &cli_addr, cli_len)) == -1) {
             		perror("sws: error in sendto()");
             		return;
         	}
+
 	}else if(strncmp( request[2], "HTTP/1.0", 8)!=0 ){
-	    	if ((numbytes = sendto(socketfd, "HTTP/1.0 400 Bad Request\n", 25, 0,
+		response_line = "HTTP/1.0 400 Bad Request";
+	    	if ((numbytes = sendto(socketfd, "HTTP/1.0 400 Bad Request\n\n", 25, 0,
                 	(struct sockaddr *) &cli_addr, cli_len)) == -1) {
             		perror("sws: error in sendto()");
             		return;
@@ -125,25 +147,38 @@ void respond(int numbytes){
 
 	    if(strncmp(request[1], "/\0", 2)==0 )
                     request[1] = "/index.html";
+	    
+	    if(strncmp(request[1], "/..",3) == 0 || strncmp(request[1], "/../",4) == 0){
+		response_line = "HTTP/1.0 404 Not Found";
+		if ((numbytes = sendto(socketfd, "HTTP/1.0 404 Not Found\n\n", 23, 0,
+                	(struct sockaddr *) &cli_addr, cli_len)) == -1) {
+            		perror("sws: error in sendto()");
+            		return;
+        	}
+		
+		return;
+	    }
 
-            printf("request[1] is: %s\n", request[1]);
+	    filename = request[1];
 
 	    strcpy(path, root_directory);
 	    strcpy(&path[strlen(root_directory)], request[1]);
 
-	    printf("file is %s\n", path);
-
 	    /* Check if the file object is found */
-	    if ( (fd=open(path, O_RDONLY))!=-1 ){
+	    FILE *fd = fopen(path, "r");
 
-		if ((numbytes = sendto(socketfd, "HTTP/1.0 200 OK\n", 17, 0,
+	    if ( fd ){
+		response_line = "HTTP/1.0 200 OK";
+		if ((numbytes = sendto(socketfd, "HTTP/1.0 200 OK\n\n", 17, 0,
                 	(struct sockaddr *) &cli_addr, cli_len)) == -1) {
             		perror("sws: error in sendto()");
             		return;
         	}
 
-                while ( (bytes_read=read(fd, data_to_send, BYTES))>0 ){
-		    if ((numbytes = sendto(socketfd, data_to_send, BYTES, 0,
+		/* Read file and send it to client */
+                while ( (bytes_read = fread(data_to_send, 1, sizeof(data_to_send), fd))>0 ){
+
+		    if ((numbytes = sendto(socketfd, data_to_send, bytes_read, 0,
                 	(struct sockaddr *) &cli_addr, cli_len)) == -1) {
             		perror("sws: error in sendto()");
             		return;
@@ -151,17 +186,24 @@ void respond(int numbytes){
 		}
 
             }else{
-		if ((numbytes = sendto(socketfd, "HTTP/1.0 404 Not Found\n", 23, 0,
+		/* Send Error To Client */
+		response_line = "HTTP/1.0 404 Not Found";
+		if ((numbytes = sendto(socketfd, "HTTP/1.0 404 Not Found\n\n", 23, 0,
                 	(struct sockaddr *) &cli_addr, cli_len)) == -1) {
             		perror("sws: error in sendto()");
             		return;
         	}
 	    }
 	}
+
+    }else{
+	response_line = "HTTP/1.0 400 Bad Request";
+        if ((numbytes = sendto(socketfd, "HTTP/1.0 400 Bad Request\n\n", 25, 0,
+            (struct sockaddr *) &cli_addr, cli_len)) == -1) {
+            perror("sws: error in sendto()");
+            return;
+        }
     }  
-
-	
-
 }
 
 int startServer(){
@@ -174,7 +216,6 @@ int startServer(){
 
     setReusable(socketfd);
 
-
     /* Clear the used structure */
     bzero((char *) &serv_addr, sizeof(serv_addr));
     
@@ -182,9 +223,6 @@ int startServer(){
     serv_addr.sin_family = AF_INET;
     serv_addr.sin_addr.s_addr = INADDR_ANY;
     serv_addr.sin_port = htons(server_portno);
-
-
-
     
     /* Bind the socket with the address information */
     if (bind(socketfd, (struct sockaddr *) &serv_addr, sizeof(serv_addr)) < 0) {
