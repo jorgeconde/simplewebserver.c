@@ -1,9 +1,9 @@
 /*
 * Simple Web Server
 *
-* file: simplews.c
+* file: sws.c
 *
-* Created by Jorge Conde Gomez Llanos.
+* Jorge Conde Gomez Llanos.
 * V00723209
 */
 
@@ -30,70 +30,80 @@ char buffer[MAXBUFLEN]; // data buffer
 
 
 void setReusable(int socket);
+void sendError(int n, int numbytes);
 int ready(int socketfd);
 void uppercase(char *s);
 int startServer();
 int readCommandLine(int c, char* a[]);
-void respond(int numbytes);
+int respond(int numbytes);
 
 
 int main(int argc, char* argv[]){
 
     int numbytes;
 
-    
-
-    if(readCommandLine(argc, argv) != 0) return -1;    
+    if(readCommandLine(argc, argv) != 0) return -1;
 
     if(startServer() != 0) return -1;    
     
-
-    
+    /* Logic from sample file in connex.uvic */
     while(1){
-
-        printf("sws: waiting to recvfrom...\n");
         cli_len = sizeof(cli_addr);
-
 	int ret = ready(socketfd);
 
         if(ret == 1)
             exit(1);
-    
+  
         if ((numbytes = recvfrom(socketfd, buffer, MAXBUFLEN-1 , 0,
                              (struct sockaddr *)&cli_addr, &cli_len)) == -1) {
             perror("sws: error on recvfrom()!");
             return -1;
         }
-    
-    	respond(numbytes);
-	printf(" %s; %s\n", response_line, filename);
-	
+
+  	if(numbytes > 4){  
+    	    if( (respond(numbytes)) == 0 ) printf(" %s; %s%s\n", response_line, root_directory, filename);
+	}
     }
     
     close(socketfd);
-    
     return 0;
 }
 
 void setReusable(int socket) {
-	int opt = 1;
+    int opt = 1;
 
-	if (setsockopt(socket, SOL_SOCKET, SO_REUSEADDR, (char *)&opt, sizeof(opt)) < 0) {
-		printf("Socket error: Unable to set server socket %d reusable \n", socket);
-	}
-
-	return;
+    if (setsockopt(socket, SOL_SOCKET, SO_REUSEADDR, (char *)&opt, sizeof(opt)) < 0)
+	printf("Socket error: Unable to set server socket %d reusable \n", socket);
 }
 
 void uppercase(char *s){
-
+    /* Convert a string to upper case */
     while ( *s != '\0' ) {
         *s = toupper ( ( unsigned char ) *s );
         ++s;
     }
 }
 
-void respond(int numbytes){
+void sendError(int n, int numbytes){
+    char *msg;
+    int i;
+
+    if(n == 400){
+	i = 25;
+        msg = "HTTP/1.0 400 Bad Request\n\n";
+	response_line = "HTTP/1.0 400 Bad Request";
+    } else if(n == 404){
+	i = 23;
+        msg = "HTTP/1.0 404 Not Found\n\n";
+	response_line = "HTTP/1.0 404 Not Found";
+    }
+
+    if ((numbytes = sendto(socketfd, msg, i, 0, (struct sockaddr *) &cli_addr, cli_len)) == -1)
+        perror("sws: error in sendto()");
+
+}
+
+int respond(int numbytes){
     time_t mytime;
     char *request[3];
     int i=0, count=1;
@@ -101,78 +111,70 @@ void respond(int numbytes){
     char path[999], data_to_send[BYTES];
     int length = strlen(buffer);
 
-    /* Client-IP:Client-Port request-line; response-line; [filename] */\
+    /* Check if the request contains a blank line, if not, ignore it */
+    if(buffer[numbytes-4] != '\r' || buffer[numbytes-3] != '\n' 
+	|| buffer[numbytes-2] != '\r' || buffer[numbytes-1] != '\n' ) return -1;
 
-    buffer[numbytes] = '\0';
-    buffer[numbytes-1] = ' ';
+    buffer[numbytes-4] = '\0'; // remove blank line
 
+    /* Get actual time */
     mytime = time(NULL);
     char *t = ctime(&mytime);
     t[strlen(t)-6] = '\0';
 
+    /* print in the server log */
     printf("%s %s:%d %s;", t ,inet_ntoa(cli_addr.sin_addr), ntohs(cli_addr.sin_port), buffer);
-
-
-    if(strcmp(buffer,"\n") == 0) return;
-
 
     request[0] = strtok(buffer," \t\n");
 
     uppercase(request[0]);
 
+    /* Check if the first argument is a GET request */
     if (strncmp(request[0], "GET\0", 4)==0) {
 	
 	char *ptr = strtok (NULL, " \t");
 	if( ptr != NULL){ count++; request[1] = ptr; }
        
-	char *ptr2 = strtok (NULL, " \t\n");
+	char *ptr2 = strtok (NULL, " \t\r\n");
 	if( ptr2 != NULL ){ count++; request[2] = ptr2; uppercase(request[2]);}
 
-	if( count < 3 ){
-		response_line = "HTTP/1.0 400 Bad Request";
-		if ((numbytes = sendto(socketfd, "HTTP/1.0 400 Bad Request\n\n", 25, 0,
-                	(struct sockaddr *) &cli_addr, cli_len)) == -1) {
-            		perror("sws: error in sendto()");
-            		return;
-        	}
+	if( count < 3 ){ // Not enough arguments
+	    if(count == 2) filename = request[1]; // We can consider this an object
+	    sendError(400, numbytes);
 
-	}else if(strncmp( request[2], "HTTP/1.0", 8)!=0 ){
-		response_line = "HTTP/1.0 400 Bad Request";
-	    	if ((numbytes = sendto(socketfd, "HTTP/1.0 400 Bad Request\n\n", 25, 0,
-                	(struct sockaddr *) &cli_addr, cli_len)) == -1) {
-            		perror("sws: error in sendto()");
-            		return;
-        	}
+	}else if(strncmp( request[2], "HTTP/1.0", 8)!=0 ){ // Anything other than HTTP/1.0 is not allowed
+	    filename = request[1];
+	    sendError(400, numbytes);
+
 	}else{
-
 	    if(strncmp(request[1], "/\0", 2)==0 )
-                    request[1] = "/index.html";
+                request[1] = "/index.html";
 	    
-	    if(strncmp(request[1], "/..",3) == 0 || strncmp(request[1], "/../",4) == 0){
-		response_line = "HTTP/1.0 404 Not Found";
-		if ((numbytes = sendto(socketfd, "HTTP/1.0 404 Not Found\n\n", 23, 0,
-                	(struct sockaddr *) &cli_addr, cli_len)) == -1) {
-            		perror("sws: error in sendto()");
-            		return;
-        	}
-		
-		return;
+	    filename = request[1];
+
+            /* If the object doesn't have a '/' at the beggining, send error */
+	    if(filename[0] != '/'){
+	        sendError(400, numbytes);
+		return 0;
 	    }
 
-	    filename = request[1];
+	    /* Weird special requests */
+	    if(strncmp(filename, "/..",3) == 0 || strncmp(filename, "/../",4) == 0){
+		sendError(404, numbytes);
+		return 0;
+	    }    
 
 	    strcpy(path, root_directory);
 	    strcpy(&path[strlen(root_directory)], request[1]);
 
 	    /* Check if the file object is found */
 	    FILE *fd = fopen(path, "r");
-
 	    if ( fd ){
 		response_line = "HTTP/1.0 200 OK";
 		if ((numbytes = sendto(socketfd, "HTTP/1.0 200 OK\n\n", 17, 0,
                 	(struct sockaddr *) &cli_addr, cli_len)) == -1) {
             		perror("sws: error in sendto()");
-            		return;
+            		return 0;
         	}
 
 		/* Read file and send it to client */
@@ -181,32 +183,25 @@ void respond(int numbytes){
 		    if ((numbytes = sendto(socketfd, data_to_send, bytes_read, 0,
                 	(struct sockaddr *) &cli_addr, cli_len)) == -1) {
             		perror("sws: error in sendto()");
-            		return;
+            		return 0;
         	    }
 		}
 
-            }else{
-		/* Send Error To Client */
-		response_line = "HTTP/1.0 404 Not Found";
-		if ((numbytes = sendto(socketfd, "HTTP/1.0 404 Not Found\n\n", 23, 0,
-                	(struct sockaddr *) &cli_addr, cli_len)) == -1) {
-            		perror("sws: error in sendto()");
-            		return;
-        	}
+            }else{ // File was not found
+		sendError(404, numbytes);
 	    }
 	}
 
-    }else{
-	response_line = "HTTP/1.0 400 Bad Request";
-        if ((numbytes = sendto(socketfd, "HTTP/1.0 400 Bad Request\n\n", 25, 0,
-            (struct sockaddr *) &cli_addr, cli_len)) == -1) {
-            perror("sws: error in sendto()");
-            return;
-        }
-    }  
+    }else{ // Request doesn't even start with GET
+	sendError(400, numbytes);
+	filename = "/UNKNOWN";
+    } 
+
+    return 0; 
 }
 
 int startServer(){
+/* Function from connex */
 
     /* Create a socket type UDP */
     if ((socketfd = socket(AF_INET, SOCK_DGRAM, 0)) == -1){
@@ -239,7 +234,6 @@ int startServer(){
 
 int readCommandLine(int c, char* a[]){
 
-
     /* Check command line arguments */
     if (c != 3) {
         printf("Syntax error: Usage is './sws <port> <directory>'\n\n");
@@ -266,7 +260,7 @@ int readCommandLine(int c, char* a[]){
 }
 
 int ready(int socketfd){
-
+/* This function is from connex.uvic */
     while (1){
         char read_buffer[MAXBUFLEN];
         fd_set readfds;
